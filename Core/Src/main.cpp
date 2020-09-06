@@ -45,6 +45,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define MAIN_EVENT_SAVE_CONFIG	( 1 << 0 )
+#define MAIN_EVENT_BROADCAST    ( 1 << 1 )
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -68,8 +70,15 @@ UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_rx;
 
 osThreadId defaultTaskHandle;
+osTimerId BroadcastTimerHandle;
+osStaticTimerDef_t BroadcastTimerControlBlock;
 /* USER CODE BEGIN PV */
+/* Declare a variable to hold the handle of the created event group. */
+EventGroupHandle_t xMainEventGroupHandle;
 
+/* Declare a variable to hold the data associated with the created
+event group. */
+StaticEventGroup_t xMainEventGroup;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -82,6 +91,7 @@ static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_USART1_UART_Init(void);
 void StartDefaultTask(void const * argument);
+void BroadcastTimer_Callback(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -95,10 +105,6 @@ void StartDefaultTask(void const * argument);
  * @note for first time flash board strore initial parameters in the memory and change them while you need them
  */
 struct Parameters configuration = {false, 1, 2.0f, false, 7, 1, 0.2f, 20.0f, 1000.0f, 0.01f, 0.0f, 0, 5};
-
-//Structure memory pool
-osPoolDef (object_pool, 10, configuration);  // Declare memory pool
-osPoolId  (object_pool_id);                 // Memory pool ID
 
 /**
  * @brief NDEBUG for SWO IDE debuging
@@ -323,6 +329,11 @@ int main(void)
   /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
 
+  /* Create the timer(s) */
+  /* definition and creation of BroadcastTimer */
+  osTimerStaticDef(BroadcastTimer, BroadcastTimer_Callback, &BroadcastTimerControlBlock);
+  BroadcastTimerHandle = osTimerCreate(osTimer(BroadcastTimer), osTimerPeriodic, NULL);
+
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
@@ -333,6 +344,13 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
+
+  /* Attempt to create the event group. */
+  xMainEventGroupHandle = xEventGroupCreateStatic( &xMainEventGroup );
+
+  /* pxEventGroupBuffer was not null so expect the event group to have
+  been created? */
+  configASSERT( xMainEventGroupHandle );
 
   /**
    * @brief Static thread for UAVCAN.
@@ -372,7 +390,8 @@ void SystemClock_Config(void)
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-  /** Initializes the CPU, AHB and APB busses clocks 
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
@@ -386,7 +405,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  /** Initializes the CPU, AHB and APB busses clocks 
+  /** Initializes the CPU, AHB and APB buses clocks
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
@@ -436,13 +455,13 @@ static void MX_I2C1_Init(void)
   {
     Error_Handler();
   }
-  /** Configure Analogue filter 
+  /** Configure Analogue filter
   */
   if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
   {
     Error_Handler();
   }
-  /** Configure Digital filter 
+  /** Configure Digital filter
   */
   if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
   {
@@ -749,9 +768,6 @@ static void MX_GPIO_Init(void)
 void StartMotorCalibrateTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-	//Create a memory pool in the thread to use and exchange data
-	object_pool_id = osPoolCreate(osPool(object_pool));
-
 	/**
 	 * @brief power supply voltage
 	 * @note default 12V
@@ -850,9 +866,6 @@ void StartMotorCalibrateTask(void const * argument)
 void StartMotorTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-
-	//Create a memory pool in the thread to use and exchange data
-	object_pool_id = osPoolCreate(osPool(object_pool));
 
 	/**
 	 * @briefpower supply voltage
@@ -1006,7 +1019,14 @@ void StartCANStatusTask(void const * argument){
 }
 
 
-
+/* BroadcastTimer_Callback function */
+void BroadcastTimer_Callback(void const * argument)
+{
+  /* USER CODE BEGIN BroadcastTimer_Callback */
+  BaseType_t xHigherPriorityTaskWoken;
+  xEventGroupSetBitsFromISR(xMainEventGroupHandle, MAIN_EVENT_BROADCAST, &xHigherPriorityTaskWoken);/* The bits being set. */
+  /* USER CODE END BroadcastTimer_Callback */
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -1019,9 +1039,6 @@ void StartCANStatusTask(void const * argument){
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-
-	//Create a memory pool in the thread to use and exchange data
-	object_pool_id = osPoolCreate(osPool(object_pool));
 
 	/**
 	 * @brief CAN Speed value
@@ -1261,47 +1278,8 @@ void StartDefaultTask(void const * argument)
         int saveAllParams() override {
         	//if (DEBUG_MAIN == 1) printf("Save - this implementation does not require any action\r\n");
 
-			uint8_t pos[31]={0};
- 			pos[0] = configuration.PowerOn;
-			pos[1] = configuration.ControlType;
-			num[0].number = configuration.ControlValue;
-			pos[2] =  num[0].bytes[0];
-			pos[3] =  num[0].bytes[1];
-			pos[4] =  num[0].bytes[2];
-			pos[5] =  num[0].bytes[3];
-			pos[6] = configuration.Calibrate;
-			pos[7] = configuration.PoleNumber;
-			pos[8] = configuration.FOCModulation;
-			num[1].number = configuration.VEL_P;
-			pos[9] =  num[1].bytes[0];
-			pos[10] =  num[1].bytes[1];
-			pos[11] =  num[1].bytes[2];
-			pos[12] =  num[1].bytes[3];
-			num[2].number = configuration.VEL_I;
-			pos[13] =  num[2].bytes[0];
-			pos[14] =  num[2].bytes[1];
-			pos[15] =  num[2].bytes[2];
-			pos[16] =  num[2].bytes[3];
-			num[3].number = configuration.VEL_U_RAMP;
-			pos[17] =  num[3].bytes[0];
-			pos[18] =  num[3].bytes[1];
-			pos[19] =  num[3].bytes[2];
-			pos[20] =  num[3].bytes[3];
-			num[4].number = configuration.VEL_FILTER_Tf;
-			pos[21] =  num[4].bytes[0];
-			pos[22] =  num[4].bytes[1];
-			pos[23] =  num[4].bytes[2];
-			pos[24] =  num[4].bytes[3];
-			num[5].number = configuration.Angle;
-			pos[25] =  num[5].bytes[0];
-			pos[26] =  num[5].bytes[1];
-			pos[27] =  num[5].bytes[2];
-			pos[28] =  num[5].bytes[3];
-			pos[29] = configuration.Orientation;
-			pos[30] = configuration.NodeID;
-
-        	myEEPROM.writeData(pos, 0x04, 31);
-        	osDelay(100);
+        	xEventGroupSetBits(xMainEventGroupHandle, MAIN_EVENT_SAVE_CONFIG);/* The bits being set. */
+        	osDelay(10);
         	return 0;     // Zero means that everything is fine.
         }
 
@@ -1414,20 +1392,73 @@ void StartDefaultTask(void const * argument)
 	 */
 	angleSensor.init();
 
+	/**
+	 * @brief Start timer
+	*/
+	osTimerStart(BroadcastTimerHandle, 50);
+
 	/* Infinite loop */
 	for(;;)
 	{
+		EventBits_t main_events = xEventGroupGetBits( xMainEventGroupHandle );
+		if (main_events & MAIN_EVENT_SAVE_CONFIG)
+		{
+			xEventGroupClearBits(xMainEventGroupHandle, MAIN_EVENT_SAVE_CONFIG );
+			uint8_t pos[31]={0};
+			pos[0] = configuration.PowerOn;
+			pos[1] = configuration.ControlType;
+			num[0].number = configuration.ControlValue;
+			pos[2] =  num[0].bytes[0];
+			pos[3] =  num[0].bytes[1];
+			pos[4] =  num[0].bytes[2];
+			pos[5] =  num[0].bytes[3];
+			pos[6] = configuration.Calibrate;
+			pos[7] = configuration.PoleNumber;
+			pos[8] = configuration.FOCModulation;
+			num[1].number = configuration.VEL_P;
+			pos[9] =  num[1].bytes[0];
+			pos[10] =  num[1].bytes[1];
+			pos[11] =  num[1].bytes[2];
+			pos[12] =  num[1].bytes[3];
+			num[2].number = configuration.VEL_I;
+			pos[13] =  num[2].bytes[0];
+			pos[14] =  num[2].bytes[1];
+			pos[15] =  num[2].bytes[2];
+			pos[16] =  num[2].bytes[3];
+			num[3].number = configuration.VEL_U_RAMP;
+			pos[17] =  num[3].bytes[0];
+			pos[18] =  num[3].bytes[1];
+			pos[19] =  num[3].bytes[2];
+			pos[20] =  num[3].bytes[3];
+			num[4].number = configuration.VEL_FILTER_Tf;
+			pos[21] =  num[4].bytes[0];
+			pos[22] =  num[4].bytes[1];
+			pos[23] =  num[4].bytes[2];
+			pos[24] =  num[4].bytes[3];
+			num[5].number = configuration.Angle;
+			pos[25] =  num[5].bytes[0];
+			pos[26] =  num[5].bytes[1];
+			pos[27] =  num[5].bytes[2];
+			pos[28] =  num[5].bytes[3];
+			pos[29] = configuration.Orientation;
+			pos[30] = configuration.NodeID;
 
-		mot_status_msg.axis_id = configuration.Orientation;
-		//mot_status_msg.motor_pos_rad_raw = fmod(angleSensor.getAngleInRad(), 6.28f);
-		//mot_status_msg.motor_pos_rad = mot_status_msg.motor_pos_rad_raw;
-		mot_status_msg.bus_voltage =  myINA226.readBusVoltage();
-		mot_status_msg.bus_power = myINA226.readBusPower();
-		mot_status_msg.shunt_voltage = myINA226.readShuntVoltage();
-		mot_status_msg.shunt_current = myINA226.readShuntCurrent();
-	    mot_status.broadcast(mot_status_msg);
-	    osDelay(50);
-
+			myEEPROM.writeData(pos, 0x04, 31);
+			osDelay(10);
+		}
+		if (main_events & MAIN_EVENT_BROADCAST)
+		{
+			xEventGroupClearBits(xMainEventGroupHandle, MAIN_EVENT_BROADCAST );
+			mot_status_msg.axis_id = configuration.Orientation;
+			mot_status_msg.motor_pos_rad_raw = myBLDC.shaft_angle_sp;
+			mot_status_msg.motor_pos_rad = myBLDC.shaft_angle;
+			mot_status_msg.bus_voltage =  myINA226.readBusVoltage();
+			mot_status_msg.bus_power = myINA226.readBusPower();
+			mot_status_msg.shunt_voltage = myINA226.readShuntVoltage();
+			mot_status_msg.shunt_current = myINA226.readShuntCurrent();
+			mot_status.broadcast(mot_status_msg);
+		}
+	    osDelay(1);
 	}
   /* USER CODE END 5 */ 
 }

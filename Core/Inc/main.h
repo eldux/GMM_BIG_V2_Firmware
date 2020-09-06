@@ -40,6 +40,7 @@ extern "C" {
 #include "stdbool.h"
 #include "malloc.h"
 #include "stdarg.h"
+#include "timers.h"
 #include "string.h"
 
 #include "as5048a.h"
